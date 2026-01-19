@@ -34,7 +34,7 @@ def init_word_dict(word, obj_key, punct_key, surface):
     """Create a dict containing the word-specific fields"""
     word_dict = {"morph_type": []}
     for word_item in word.find_all("item", recursive=False):
-        key = word_item["type"] + "_" + word_item["lang"]
+        key = word_item["type"] + "_" + word_item.get("lang", "na")
         if key in (obj_key, punct_key):
             surface.append(word_item.text)
         else:
@@ -67,7 +67,7 @@ def extract_morpheme_data(morpheme, morpheme_type, word_dict, gloss_key, conf):
     """Extract information from morphemes in a word, add to word_dict"""
     word_dict["morph_type"].append(morpheme_type)
     for item in morpheme.find_all("item"):
-        key = item["type"] + "_" + item["lang"]
+        key = item["type"] + "_" + item.get("lang", "na")
         word_dict.setdefault(key, "")
         text = item.text
         if key == gloss_key or "msa" in key:
@@ -120,7 +120,8 @@ def iterate_morphemes(word, word_dict, obj_key, gloss_key, conf, p=False):
     for key in [obj_key, gloss_key]:
         if word_dict and key not in word_dict:
             word_dict[key] = "=".join(
-                [x.get(key, "") for x in proclitics] + [x.get(key, "") for x in enclitics]
+                [x.get(key, "") for x in proclitics]
+                + [x.get(key, "") for x in enclitics]
             )
     return proclitics, enclitics, word_dict
 
@@ -392,6 +393,9 @@ def get_text_id(text):
         if abbrev.text != "" and text_id is None:
             text_id = humidify(abbrev.text, key="texts", unique=True)
             log.info(f"Processing text {text_id} ({abbrev['lang']})")
+    if not text_id:
+        abbrevs = text.select("item[type='title']")
+        text_id = humidify(abbrevs[0].text)
     return text_id
 
 
@@ -431,6 +435,9 @@ def prepare_records(df, conf):
             )
         df[v] = df[k]
     df["Language_ID"] = conf["lang_id"]
+    for cand in ["gls_en_phrase", "segnum_de_phrase"]:
+        if cand in df.columns:
+            df["Sentence_Number"] = df[cand]
     # resolve records with multiple phrases
     df = df.apply(lambda x: split_subrecords(x), axis=1)
     sort_order = [

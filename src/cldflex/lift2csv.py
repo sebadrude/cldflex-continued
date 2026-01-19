@@ -115,6 +115,7 @@ def parse_entries(entries):
             form = allomorph.find("form")
             for trait in allomorph.find_all("trait", recursive=False):
                 add_to_list_in_dict(rec, "variant_" + trait["name"], trait["value"])
+            print(form)
             add_to_list_in_dict(rec, "variant_" + form["lang"], form.text)
         rec["Gramm"] = deduplicate(rec["Gramm"])
         parsed.append(rec)
