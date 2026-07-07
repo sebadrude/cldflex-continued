@@ -115,7 +115,16 @@ def parse_entries(entries):
             form = allomorph.find("form")
             for trait in allomorph.find_all("trait", recursive=False):
                 add_to_list_in_dict(rec, "variant_" + trait["name"], trait["value"])
-            print(form)
+            # Real FLEx exports can contain a <variant> with no <form> child
+            # (e.g. an allomorph slot created in FLEx but left without a form).
+            # Skip such variants with a warning rather than crashing on
+            # form["lang"]. See bug #4.
+            if form is None:
+                log.warning(
+                    f"Entry {rec['ID']} has a <variant> with no <form>; "
+                    "skipping this variant."
+                )
+                continue
             add_to_list_in_dict(rec, "variant_" + form["lang"], form.text)
         rec["Gramm"] = deduplicate(rec["Gramm"])
         parsed.append(rec)
