@@ -68,7 +68,10 @@ def dictionary(filename, config_file, cldf, output_dir):
     default=None,
 )
 @click.option("-d", "--cldf", "cldf", default=False, is_flag=True)
-@click.option("-d", "--rich", "rich", default=False, is_flag=True)
+# --rich previously also declared "-d", colliding with --cldf and making click
+# emit a UserWarning and the -d short flag ambiguous. Give it its own short
+# flag "-r". See bug #2.
+@click.option("-r", "--rich", "rich", default=False, is_flag=True)
 def wordlist(filename, config_file, cldf, output_dir, rich):
     if not output_dir:
         output_dir = Path(filename.parents[0])
