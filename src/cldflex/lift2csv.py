@@ -128,6 +128,12 @@ def convert(
     if not lift_file.suffix == ".lift":
         log.error(f"Please provide a .lift file ({lift_file}).")
         sys.exit()
+    # cldflex is documented as usable config-free (the README recommends starting
+    # without a config). When no --conf is passed, cli._load_config returns None;
+    # default it to an empty dict here so every conf.get(...) below falls back to
+    # its documented default instead of raising AttributeError. See bug #3.
+    if conf is None:
+        conf = {}
     sep = conf.get(
         "csv_cell_separator", SEPARATOR
     )  # separator used in cells with multiple values
