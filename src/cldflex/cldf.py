@@ -149,10 +149,14 @@ def add_language(writer, cwd, glottocode, iso):  # pragma: no cover
 
 def write_readme(ds):
     readme = metadata2markdown(ds, ds.directory)
-    dump(
-        f"**This dataset was automatically created by [cldflex](https://pypi.org/project/cldflex).**\n\n{readme}",
-        ds.directory / "README.md",
+    header = (
+        "**This dataset was automatically created by "
+        "[cldflex-continued](https://github.com/sebadrude/cldflex-continued), "
+        "an independent continuation of "
+        "[cldflex](https://github.com/fmatter/cldflex) originally created by "
+        "Florian Matter.**\n\n"
     )
+    dump(f"{header}{readme}", ds.directory / "README.md")
 
 
 def create_corpus_dataset(
@@ -347,12 +351,61 @@ def write_dictionary_dataset(
     with CLDFWriter(spec) as writer:
         entries["Headword"] = entries["Form"]
         entries["Part_Of_Speech"] = entries["Gramm"]
+
+        # A CLDF example requires Primary_Text (the vernacular line). FLEx
+        # exports can contain empty or translation-only example slots; drop
+        # those so the dataset validates and no sense ends up referencing a
+        # non-representable example.
+        if len(examples) > 0 and "Primary_Text" in examples.columns:
+            before = len(examples)
+            examples = examples[
+                examples["Primary_Text"].astype(str).str.strip() != ""
+            ]
+            dropped_examples = before - len(examples)
+            if dropped_examples:
+                log.info(
+                    f"Dropping {dropped_examples} example(s) with no "
+                    "Primary_Text (vernacular line)."
+                )
+
+        # Link senses to the examples that illustrate them. FLEx nests each
+        # example under a single sense; we expose that in CLDF via the
+        # exampleReference property -- a multivalued foreign key (Example_IDs)
+        # on the SenseTable. Without this, examples are emitted but orphaned
+        # (no cross-reference in either direction).
+        has_examples = len(examples) > 0
+        example_ids_by_sense = {}
+        if has_examples:
+            writer.cldf.add_component("ExampleTable")
+            valid_sense_ids = set(senses["ID"])
+            for example in examples.to_dict("records"):
+                sense_id = example.get("Sense_ID")
+                if sense_id and sense_id in valid_sense_ids:
+                    example_ids_by_sense.setdefault(sense_id, []).append(
+                        example["ID"]
+                    )
+            writer.cldf.add_columns(
+                "SenseTable",
+                {
+                    "name": "Example_IDs",
+                    "required": False,
+                    "propertyUrl": "http://cldf.clld.org/v1.0/terms.rdf#exampleReference",
+                    "separator": SEPARATOR,
+                    "dc:extent": "multivalued",
+                    "dc:description": "The examples illustrating this sense.",
+                },
+            )
+            writer.cldf.add_foreign_key(
+                "SenseTable", "Example_IDs", "ExampleTable", "ID"
+            )
+
         for entry in entries.to_dict("records"):
             writer.objects["EntryTable"].append(entry)
         for sense in senses.to_dict("records"):
+            if has_examples:
+                sense["Example_IDs"] = example_ids_by_sense.get(sense["ID"], [])
             writer.objects["SenseTable"].append(sense)
-        if len(examples) > 0:
-            writer.cldf.add_component("ExampleTable")
+        if has_examples:
             for example in examples.to_dict("records"):
                 writer.objects["ExampleTable"].append(example)
         if glottocode:
