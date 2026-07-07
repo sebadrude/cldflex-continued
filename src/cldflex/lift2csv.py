@@ -316,26 +316,46 @@ def convert(
     for key in [definition_key, gloss_key]:
         if key not in senses.columns:
             senses[key] = np.nan
-    # fill sense descriptions with glosses.
-    # definition_key / gloss_key cells hold either a list of strings (built by
-    # add_to_list_in_dict) or NaN when absent. Testing `not pd.isnull(list)` is
-    # ambiguous on a list, so check for a non-empty list explicitly and fall
-    # back to the gloss otherwise. See bug #5.
-    senses["Description"] = senses.apply(
-        lambda x: x[definition_key]
-        if isinstance(x[definition_key], list) and len(x[definition_key]) > 0
-        else x[gloss_key],
-        axis=1,
-    )
-    # fill sense names with glosses and definitions
 
-    senses = senses[~(pd.isnull(senses[gloss_key]))]
+    # Build sense Name and Description with a fallback across the kept analysis
+    # languages, in gloss_lgs priority order. A sense that lacks a gloss in the
+    # primary language but has one in a secondary kept language still gets a
+    # Name from that language, so it is neither lost nor left dangling from the
+    # forms that reference it (a real case in multi-analysis-language FLEx
+    # projects). Name prefers glosses then definitions; Description prefers
+    # definitions then glosses. Cells are lists (built by add_to_list_in_dict)
+    # or absent. See bug #5 and the analysis-language handling above.
+    gloss_keys = [f"gloss_{lang}" for lang in gloss_lgs]
+    def_keys = [f"definition_{lang}" for lang in gloss_lgs]
+
+    def first_nonempty(row, keys):
+        for key in keys:
+            val = row.get(key)
+            if isinstance(val, list) and len(val) > 0:
+                return val
+        return None
+
+    def build_label(row, keys):
+        val = first_nonempty(row, keys)
+        return " / ".join(val) if val else None
+
     senses["Name"] = senses.apply(
-        lambda x: " / ".join(x[gloss_key])
-        if not pd.isnull(x[gloss_key]).all()
-        else x[definition_key],
-        axis=1,
+        lambda x: build_label(x, gloss_keys + def_keys), axis=1
     )
+    senses["Description"] = senses.apply(
+        lambda x: build_label(x, def_keys + gloss_keys), axis=1
+    )
+
+    # Drop only senses with no meaning in ANY kept analysis language (truly
+    # empty). Forms referencing these are pruned later to preserve referential
+    # integrity.
+    empty_count = int(senses["Name"].isnull().sum())
+    if empty_count:
+        log.info(
+            f"Dropping {empty_count} sense(s) with no gloss or definition in "
+            "any kept analysis language."
+        )
+    senses = senses[~senses["Name"].isnull()]
 
     # method for printing entries in log
     def entry_repr(entry_id):
@@ -548,6 +568,16 @@ def convert(
             for df in [entries, morphemes, morphs, dictionary_examples]:
                 df["Language_ID"] = obj_lg
 
+    # Prune sense references that point to senses dropped above, so forms and
+    # entries never reference a non-existent parameter (referential integrity).
+    valid_sense_ids = set(senses["ID"]) if "ID" in senses.columns else set()
+    if "Parameter_ID" in entries.columns:
+        entries["Parameter_ID"] = entries["Parameter_ID"].apply(
+            lambda v: [s for s in v if s in valid_sense_ids]
+            if isinstance(v, list)
+            else v
+        )
+
     if output_dir:
         for df, name in [
             (entries, "entries"),
@@ -564,8 +594,24 @@ def convert(
         cldf_settings = conf.get("cldf", {})
         metadata = cldf_settings.get("metadata", {})
         if cldf_mode == "wordlist":
+            # A CLDF Wordlist form must reference at least one concept. Drop
+            # forms with no (surviving) sense -- e.g. affixes or clitics without
+            # a gloss -- so the dataset stays valid. Parameter_ID may be a list
+            # (API use) or a sep-joined string (after CSV delistify).
+            def has_concept(value):
+                if isinstance(value, list):
+                    return len(value) > 0
+                return bool(str(value).strip())
+
+            forms = entries[entries["Parameter_ID"].apply(has_concept)]
+            dropped_forms = len(entries) - len(forms)
+            if dropped_forms:
+                log.info(
+                    f"Wordlist: dropping {dropped_forms} form(s) with no linked "
+                    "concept (e.g. affixes/clitics without a gloss)."
+                )
             create_wordlist_dataset(
-                forms=entries,
+                forms=forms,
                 senses=senses,
                 glottocode=glottocode,
                 metadata=metadata,
