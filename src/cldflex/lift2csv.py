@@ -177,10 +177,14 @@ def convert(
     for key in [definition_key, gloss_key]:
         if key not in senses.columns:
             senses[key] = np.nan
-    # fill sense descriptions with glosses
+    # fill sense descriptions with glosses.
+    # definition_key / gloss_key cells hold either a list of strings (built by
+    # add_to_list_in_dict) or NaN when absent. Testing `not pd.isnull(list)` is
+    # ambiguous on a list, so check for a non-empty list explicitly and fall
+    # back to the gloss otherwise. See bug #5.
     senses["Description"] = senses.apply(
         lambda x: x[definition_key]
-        if not pd.isnull(x[definition_key])
+        if isinstance(x[definition_key], list) and len(x[definition_key]) > 0
         else x[gloss_key],
         axis=1,
     )
