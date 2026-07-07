@@ -74,12 +74,38 @@ There is no default configuration.
 Rather, `cldflex` will guess values for most of the parameters below and tell you what it's doing.
 It is suggested to start out configuration-free until something goes wrong or you want to change something.
 Create a [YAML](https://yaml.org/) file for CLI usage, pass a dict to the `convert` methods.
+If a `cldflex.yaml` file sits in the current directory or next to your input file, it is picked up automatically.
 
 * `obj_lg`: the object language
-* `gloss_lg`: the language used for glossing / translation
+* `gloss_lg`: the (single) language used for glossing / translation — the *primary* analysis language (see [Analysis languages](#analysis-languages) below)
+* `gloss_lgs`: an ordered list of analysis languages to keep; the first is primary (see below)
 * `msa_lg`: the language used for storing POS information
 * `lang_id`: the value to be used in the created tables
 * `glottocode`: used to look up language metadata from glottolog
 * `csv_cell_separator`: if there are multiple values in a cell (allomorphs, polysemy...), they are by default separated by `"; "`
 * `form_slices`: set to `false` if you don't want form slices connecting morphs and word forms
 * `mappings`: a dictionary specifying name changes of columns in the created CSV files
+
+### Analysis languages
+FLEx projects frequently have **two analysis (metadata) languages** — for example a regional/contact language (Portuguese, Spanish, French, Indonesian…) alongside a major language such as English. LIFT preserves the glosses and definitions in *all* of these languages, but it does **not** record which one FLEx treated as the primary analysis language (that ordering lives only in the unexported `.fwdata` project settings). `cldflex` therefore lets you decide.
+
+The *primary* analysis language drives each sense's `Name`/`Description` (and hence the CLDF concept labels). Any additional kept languages are preserved as extra columns (`definition_<lang>`, `gloss_<lang>`, `note_..._<lang>`, …).
+
+Control this with `gloss_lgs` (an ordered list) in your config, or the `--gloss-lgs` CLI flag (comma-separated). The first entry is primary; every listed language is kept; any analysis language found in the data but not listed is dropped.
+
+```yaml
+# keep both, Portuguese primary:
+gloss_lgs: [pt, en]
+# keep both, English primary:
+# gloss_lgs: [en, pt]
+# keep only Portuguese (drops the English columns):
+# gloss_lgs: [pt]
+```
+
+```shell
+cldflex dictionary lexicon.lift --gloss-lgs pt,en   # overrides the config
+```
+
+If you configure nothing, `cldflex` keeps **all** analysis languages it finds, guesses the primary as the most frequent one, and warns you that it guessed. The legacy singular `gloss_lg` still works: it names the primary and keeps every other language after it.
+
+When a FLEx-generated `WritingSystems/` folder sits next to the input file, `cldflex` reads it to list the declared writing systems and to warn about configured language codes that aren't declared there (catching typos).

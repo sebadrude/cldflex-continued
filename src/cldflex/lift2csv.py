@@ -54,6 +54,132 @@ def figure_out_gloss_language(entry):
     return None
 
 
+def detect_gloss_languages(lexicon):
+    """Return the analysis-language codes used for glossing/defining entries,
+    ordered by frequency (most frequent first).
+
+    FLEx projects commonly have two "analysis" languages -- a regional/contact
+    language (e.g. Portuguese) plus a major language (e.g. English). LIFT does
+    NOT record which of them is the project's primary analysis language (that
+    ordering lives only in the unexported .fwdata project settings), so the
+    caller must decide via configuration. This helper only reports which
+    analysis languages actually occur in the data, and how prominently.
+    """
+    counts = {}
+    for tag in lexicon.find_all(["gloss", "definition"]):
+        if tag.name == "gloss":
+            langs = [tag.get("lang")]
+        else:  # a <definition> carries its language on child <form> elements
+            langs = [form.get("lang") for form in tag.find_all("form")]
+        for lang in langs:
+            if lang:
+                counts[lang] = counts.get(lang, 0) + 1
+    # frequency desc, then alphabetical, for stable and predictable output
+    return sorted(counts, key=lambda lang: (-counts[lang], lang))
+
+
+def read_writing_systems(cwd):
+    """Return the set of writing-system codes declared in a FLEx-generated
+    ``WritingSystems/*.ldml`` folder next to the LIFT export, or ``None`` if
+    that folder is absent.
+
+    The LDML files describe each writing system (collation, exemplar
+    characters, font) but do NOT mark languages as object vs. analysis, nor
+    record their priority order. We therefore use this only to enumerate the
+    writing systems and to sanity-check configured language codes (catching
+    typos and languages missing from the export).
+    """
+    ws_dir = Path(cwd) / "WritingSystems"
+    if not ws_dir.is_dir():
+        return None
+    codes = set()
+    for ldml in sorted(ws_dir.glob("*.ldml")):
+        try:
+            soup = BeautifulSoup(ldml.read_text(encoding="utf-8"), features="xml")
+        except OSError as err:  # pragma: no cover - defensive
+            log.warning(f"Could not read writing system file {ldml}: {err}")
+            continue
+        lang = soup.find("language")
+        if lang and lang.get("type"):
+            codes.add(lang["type"])
+    return codes
+
+
+def resolve_analysis_languages(conf, lexicon, cwd):
+    """Determine the ordered list of analysis (gloss) languages to keep.
+
+    The first element is the *primary* analysis language: it drives the sense
+    ``Name``/``Description`` and therefore the CLDF concept labels. The
+    remaining languages are preserved as extra columns; any analysis language
+    present in the data but absent from the returned list is dropped
+    downstream.
+
+    Resolution order:
+      1. ``conf['gloss_lgs']`` -- an ordered list (or a single string): explicit.
+      2. ``conf['gloss_lg']`` -- legacy single key: that language is primary and
+         every other detected analysis language is kept after it.
+      3. Otherwise: keep all detected analysis languages, guess the primary as
+         the most frequent one, and warn that it was guessed.
+
+    Returns ``(gloss_lgs, available)`` where ``gloss_lgs`` is the ordered
+    keep-list and ``available`` is every analysis language found in the data.
+    """
+    available = detect_gloss_languages(lexicon)
+    declared = read_writing_systems(cwd)
+    if declared is not None:
+        log.info(f"Writing systems declared in WritingSystems/: {sorted(declared)}")
+    if available:
+        log.info(f"Analysis languages found in data (by frequency): {available}")
+
+    gloss_lgs = conf.get("gloss_lgs")
+    if gloss_lgs:
+        gloss_lgs = [gloss_lgs] if isinstance(gloss_lgs, str) else list(gloss_lgs)
+    elif conf.get("gloss_lg"):
+        primary = conf["gloss_lg"]
+        gloss_lgs = [primary] + [lang for lang in available if lang != primary]
+    else:
+        gloss_lgs = list(available)
+        if gloss_lgs:
+            log.warning(
+                "No analysis language configured (gloss_lgs / gloss_lg). "
+                f"Keeping all detected analysis languages {available} and "
+                f"guessing the primary as '{gloss_lgs[0]}' (most frequent in "
+                "the data). Set 'gloss_lgs' in your config or pass --gloss-lgs "
+                "to control which language is primary and which are kept."
+            )
+
+    for lang in gloss_lgs:
+        if available and lang not in available:
+            log.warning(
+                f"Configured analysis language '{lang}' has no glosses or "
+                f"definitions in the data (found: {available})."
+            )
+        if declared is not None and lang not in declared:
+            log.warning(
+                f"Configured analysis language '{lang}' is not declared in "
+                f"WritingSystems/ ({sorted(declared)}). Possible typo?"
+            )
+
+    dropped = [lang for lang in available if lang not in gloss_lgs]
+    if dropped:
+        log.info(f"Dropping analysis language(s) not in keep-list: {dropped}")
+    return gloss_lgs, available
+
+
+def drop_analysis_lang_columns(df, langs, obj_lg):
+    """Drop columns whose ``_<lang>`` suffix is an analysis language slated for
+    removal. Object-language columns (suffix ``_<obj_lg>``) are never dropped.
+    """
+    drop_cols = [
+        col
+        for col in df.columns
+        if any(col.endswith(f"_{lang}") for lang in langs if lang != obj_lg)
+    ]
+    if drop_cols:
+        return df.drop(columns=drop_cols)
+    return df
+
+
 def parse_entries(entries):
     parsed = []  # parsed entries
     senses = []  # gathered senses
@@ -152,16 +278,21 @@ def convert(
         lexicon = BeautifulSoup(f.read(), features="xml")
 
     obj_lg = conf.get("obj_lg", None)  # main object language
-    gloss_lg = conf.get("gloss_lg", None)  # main gloss language
+    if not obj_lg:  # if not configured, deduce from the first lexical unit
+        first_unit = lexicon.find("lexical-unit")
+        first_form = first_unit.find("form") if first_unit else None
+        if first_form:
+            obj_lg = first_form["lang"]
+            log.info(f"Unconfigured: obj_lg, assuming '{obj_lg}'")
 
-    for entry in lexicon.find_all(
-        "entry"
-    ):  # if not defined, they are deducted from the data
-        if not gloss_lg:
-            gloss_lg = figure_out_gloss_language(entry)
-            log.info(f"Unconfigured: gloss_lg, assuming {gloss_lg}")
-        if not obj_lg:
-            obj_lg = entry.find("form")["lang"]
+    # Resolve analysis (gloss) languages: an ordered keep-list whose first
+    # element is the primary language driving sense Name/Description. See
+    # resolve_analysis_languages() for the full resolution order.
+    gloss_lgs, available_gloss_lgs = resolve_analysis_languages(
+        conf, lexicon, lift_file.parents[0]
+    )
+    gloss_lg = gloss_lgs[0] if gloss_lgs else None  # primary analysis language
+    log.info(f"Primary analysis language: '{gloss_lg}'")
 
     obj_key = f"form_{obj_lg}"  # <form lang="X"><text>Y</text></form> becomes form_X: Y
     definition_key = f"definition_{gloss_lg}"  # <definition><form lang="X"><text>Y</text></form></definition> becomes defition_X: Y
@@ -174,6 +305,14 @@ def convert(
     entries, senses, dictionary_examples = parse_entries(lexicon.find_all("entry"))
     entries = pd.DataFrame.from_dict(entries)
     senses = pd.DataFrame.from_dict(senses)
+
+    # Drop columns for analysis languages the user chose not to keep. The
+    # primary language is always in gloss_lgs, so its columns survive.
+    langs_to_drop = [lang for lang in available_gloss_lgs if lang not in gloss_lgs]
+    if langs_to_drop:
+        entries = drop_analysis_lang_columns(entries, langs_to_drop, obj_lg)
+        senses = drop_analysis_lang_columns(senses, langs_to_drop, obj_lg)
+
     for key in [definition_key, gloss_key]:
         if key not in senses.columns:
             senses[key] = np.nan
