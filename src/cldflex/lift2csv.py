@@ -328,16 +328,31 @@ def convert(
     gloss_keys = [f"gloss_{lang}" for lang in gloss_lgs]
     def_keys = [f"definition_{lang}" for lang in gloss_lgs]
 
+    # When a label falls back to a NON-primary analysis language (an incomplete
+    # sense, e.g. glossed only in Portuguese while the primary is English), tag
+    # it with "<lang><flag>" so such senses are easy to spot and filter later.
+    # The flag symbol is configurable; the default "|" is deliberately NOT one
+    # of the Leipzig Glossing Rules separators (- = . _ ; : \ > ~ [] ()), and
+    # avoids "*" which conventionally marks reconstructed forms. Set
+    # nonprimary_gloss_flag to "" to disable tagging.
+    primary_lang = gloss_lgs[0] if gloss_lgs else None
+    nonprimary_flag = conf.get("nonprimary_gloss_flag", "|")
+
     def first_nonempty(row, keys):
         for key in keys:
             val = row.get(key)
             if isinstance(val, list) and len(val) > 0:
-                return val
-        return None
+                return val, key.rsplit("_", 1)[-1]  # value, language code
+        return None, None
 
     def build_label(row, keys):
-        val = first_nonempty(row, keys)
-        return " / ".join(val) if val else None
+        val, lang = first_nonempty(row, keys)
+        if not val:
+            return None
+        label = " / ".join(val)
+        if nonprimary_flag and lang and lang != primary_lang:
+            label = f"{lang}{nonprimary_flag}{label}"
+        return label
 
     senses["Name"] = senses.apply(
         lambda x: build_label(x, gloss_keys + def_keys), axis=1

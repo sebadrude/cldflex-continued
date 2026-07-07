@@ -79,6 +79,7 @@ If a `cldflex.yaml` file sits in the current directory or next to your input fil
 * `obj_lg`: the object language
 * `gloss_lg`: the (single) language used for glossing / translation — the *primary* analysis language (see [Analysis languages](#analysis-languages) below)
 * `gloss_lgs`: an ordered list of analysis languages to keep; the first is primary (see below)
+* `nonprimary_gloss_flag`: symbol used to tag sense labels that fall back to a non-primary analysis language (default `"|"`, e.g. `pt|dar`); set to `""` to disable (see below)
 * `msa_lg`: the language used for storing POS information
 * `lang_id`: the value to be used in the created tables
 * `glottocode`: used to look up language metadata from glottolog
@@ -107,5 +108,7 @@ cldflex dictionary lexicon.lift --gloss-lgs pt,en   # overrides the config
 ```
 
 If you configure nothing, `cldflex` keeps **all** analysis languages it finds, guesses the primary as the most frequent one, and warns you that it guessed. The legacy singular `gloss_lg` still works: it names the primary and keeps every other language after it.
+
+**Incomplete senses.** A sense that has no gloss/definition in the primary language but does in a kept secondary language keeps its meaning from that language, so it is never silently lost (and forms referencing it stay valid). Such fallback labels are tagged with `<lang><flag>`, e.g. `pt|dar`, so incomplete entries are easy to spot and filter. The flag symbol is `nonprimary_gloss_flag` (default `"|"`), deliberately chosen to avoid the [Leipzig Glossing Rules](https://www.eva.mpg.de/lingua/pdf/Glossing-Rules.pdf) separators and the reconstruction marker `*`. Set it to `""` to turn tagging off.
 
 When a FLEx-generated `WritingSystems/` folder sits next to the input file, `cldflex` reads it to list the declared writing systems and to warn about configured language codes that aren't declared there (catching typos).
